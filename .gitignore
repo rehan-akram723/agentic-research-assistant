@@ -13,3 +13,5 @@ faiss_index/
 
 # Python
 *.pyc
+
+PROJECT_MANIFEST.md

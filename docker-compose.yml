@@ -1,0 +1,51 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: research_agent_backend
+    # Override command to enable Uvicorn's auto-reload for development
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    volumes:
+      # Map the local directory to the container for live code reloads
+      - .:/app
+    # Securely inject environment variables without hardcoding them here
+    env_file:
+      - .env
+    networks:
+      - research_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: research_agent_frontend
+    # Override command to run the Streamlit UI
+    command: streamlit run src/ui/app.py --server.address=0.0.0.0 --server.port=8501
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    environment:
+      # Instruct the UI to point to the backend container via Docker's internal DNS
+      - API_URL=http://backend:8000
+    networks:
+      - research_net
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  research_net:
+    driver: bridge
