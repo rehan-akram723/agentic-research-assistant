@@ -1,0 +1,15 @@
+# Environments
+.env
+env/
+venv/
+__pycache__/
+
+# Vector Databases
+faiss_index/
+
+# IDEs
+.vscode/
+.idea/
+
+# Python
+*.pyc
