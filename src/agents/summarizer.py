@@ -1,33 +1,146 @@
-"""Summarizer agent: lightweight deterministic summaries for Phase 1.
+"""Summarizer agent for Phase 3.
 
-Extracts the key points from each Document's title and abstract and
-produces a short structured summary string for downstream agents.
+The summarizer produces one structured summary per retrieved document. Gemini is
+used when available, while a deterministic fallback keeps the pipeline runnable
+without external model access.
 """
 from __future__ import annotations
 
+import json
+import re
 from typing import List
+
+from pydantic import BaseModel, Field
+
+from src.core.config import settings
+from src.core.exceptions import AgentError
+from src.core.logger import get_logger
 from src.graph.state import ResearchState
 from src.schemas.document import Document
 
+logger = get_logger(__name__)
 
-def _summarize_doc(doc: Document) -> str:
-    parts = [f"Title: {doc.title}", f"Authors: {', '.join(doc.authors)}"]
-    if doc.abstract:
-        # take the first 2 sentences as a naive summary
-        abstract = doc.abstract.strip()
-        sentences = abstract.split('.')
-        summary_text = '.'.join([s.strip() for s in sentences[:2] if s.strip()])
-        parts.append(f"Abstract Summary: {summary_text}.")
-    return "\n".join(parts)
+try:  # pragma: no cover - import depends on environment
+    from langchain_google_genai import ChatGoogleGenerativeAI
+except ImportError:  # pragma: no cover
+    ChatGoogleGenerativeAI = None
+
+
+class SummaryPayload(BaseModel):
+    summary: str = Field(default="")
+    key_points: List[str] = Field(default_factory=list)
+    claims: List[str] = Field(default_factory=list)
+
+
+def _coerce_document(item: object) -> Document:
+    if isinstance(item, Document):
+        return item
+
+    if isinstance(item, dict):
+        if hasattr(Document, "model_validate"):
+            return Document.model_validate(item)  # type: ignore[attr-defined]
+        return Document(**item)
+
+    raise AgentError("summarizer_agent received an invalid retrieved document.")
+
+
+def _build_llm() -> object | None:
+    if ChatGoogleGenerativeAI is None or not settings.gemini_api_key:
+        return None
+    return ChatGoogleGenerativeAI(
+        model="gemini-1.5-flash",
+        google_api_key=settings.gemini_api_key,
+        temperature=0.2,
+    )
+
+
+def _split_sentences(text: str) -> List[str]:
+    sentences = [segment.strip() for segment in re.split(r"(?<=[.!?])\s+", text) if segment.strip()]
+    return sentences
+
+
+def _fallback_payload(document: Document) -> SummaryPayload:
+    abstract = " ".join((document.abstract or "").split())
+    sentences = _split_sentences(abstract)
+    summary_text = " ".join(sentences[:2]).strip() or abstract[:400].strip() or "No abstract available."
+    key_points = [summary_text[:240]]
+    if document.published_date:
+        key_points.append(f"Published: {document.published_date}")
+    claims = [sentence[:240] for sentence in sentences[:3]] if sentences else [summary_text[:240]]
+    return SummaryPayload(summary=summary_text, key_points=key_points, claims=claims)
+
+
+def _parse_payload(payload: str) -> SummaryPayload:
+    data = json.loads(payload)
+    if not isinstance(data, dict):
+        raise ValueError("Summary payload must be a JSON object")
+    return SummaryPayload.model_validate(data)
+
+
+def _call_gemini(document: Document) -> SummaryPayload:
+    if ChatGoogleGenerativeAI is None:
+        raise AgentError("langchain-google-genai is not installed.")
+    if not settings.gemini_api_key:
+        raise AgentError("Gemini API key is not configured.")
+
+    prompt = (
+        "You are summarizing a research paper for downstream citation verification. "
+        "Return JSON only with keys summary, key_points, and claims. The summary should be 2 to 4 sentences. "
+        "Key points should contain 2 to 4 concise bullets, and claims should contain 1 to 3 factual claims "
+        "drawn only from the supplied title, authors, abstract, and metadata.\n\n"
+        f"Document ID: {document.id}\n"
+        f"Title: {document.title}\n"
+        f"Authors: {', '.join(document.authors)}\n"
+        f"Abstract: {document.abstract}\n"
+        f"Published: {document.published_date or 'Unknown'}\n"
+        f"Source: {document.source}\n"
+    )
+
+    model = ChatGoogleGenerativeAI(
+        model="gemini-1.5-flash",
+        google_api_key=settings.gemini_api_key,
+        temperature=0.2,
+    )
+    response = model.invoke(prompt)
+    content = getattr(response, "content", response)
+    return _parse_payload(str(content))
+
+
+def _format_summary(document: Document, payload: SummaryPayload) -> str:
+    lines = [
+        f"Document ID: {document.id}",
+        f"Title: {document.title}",
+        f"Authors: {', '.join(document.authors) if document.authors else 'Unknown authors'}",
+        f"Source: {document.source}",
+        f"Published: {document.published_date or 'Unknown'}",
+        f"Summary: {payload.summary.strip()}",
+        "Key Points:",
+    ]
+    lines.extend(f"- {point.strip()}" for point in payload.key_points if point.strip())
+    lines.append("Claims:")
+    lines.extend(f"- {claim.strip()}" for claim in payload.claims if claim.strip())
+    if document.url:
+        lines.append(f"URL: {document.url}")
+    return "\n".join(lines)
 
 
 def summarizer_agent(state: ResearchState) -> dict:
-    docs: List[Document] = state.get("retrieved_docs", []) or []
-    summaries: List[str] = []
-    for d in docs:
-        if isinstance(d, dict):
-            d = Document.model_validate(d) if hasattr(Document, "model_validate") else Document(**d)
-        summaries.append(_summarize_doc(d))
+    try:
+        documents = [_coerce_document(item) for item in (state.get("retrieved_docs") or [])]
+        summaries: List[str] = []
 
-    step_log = [f"summarizer: produced {len(summaries)} summaries"]
-    return {"summaries": summaries, "step_log": step_log}
+        for document in documents:
+            try:
+                payload = _call_gemini(document)
+            except Exception as exc:
+                logger.warning("summarizer_agent falling back to deterministic summary: %s", exc)
+                payload = _fallback_payload(document)
+            summaries.append(_format_summary(document, payload))
+
+        step_log = [f"summarizer: produced {len(summaries)} summaries"]
+        logger.info("summarizer_agent produced %s summaries", len(summaries))
+        return {"summaries": summaries, "step_log": step_log}
+    except AgentError:
+        raise
+    except Exception as exc:
+        raise AgentError(f"Summarizer agent failed: {exc}") from exc

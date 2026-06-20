@@ -34,19 +34,6 @@ class SemanticScholarTool:
         return self.search_semantic_scholar(query, limit)
 
     def search_semantic_scholar(self, query: str, limit: Optional[int] = None) -> List[Document]:
-        """
-        Executes a search against Semantic Scholar.
-
-        Args:
-            query (str): The search query string.
-            limit (int, optional): Max results to retrieve. Overrides self.max_results if provided.
-
-        Returns:
-            List[Document]: A list of mapped Document objects.
-
-        Raises:
-            RetrievalError: If the API responds with an unrecoverable error after retries.
-        """
         search_limit = limit if limit is not None else self.max_results
         params = {
             "query": query,
@@ -80,8 +67,9 @@ class SemanticScholarTool:
             except requests.exceptions.RequestException as e:
                 logger.warning(f"Semantic Scholar search attempt {attempt + 1} failed: {e}")
                 if attempt == max_retries - 1:
-                    logger.error(f"Semantic Scholar search completely failed for query: '{query}'")
-                    raise RetrievalError(f"Semantic Scholar search failed after {max_retries} attempts: {e}") from e
+                    # FIX: Do not raise an exception. Log and degrade gracefully.
+                    logger.error(f"Semantic Scholar search completely failed for query: '{query}'. Degrading to empty list.")
+                    return []
                 time.sleep(2 ** attempt)
 
         return []

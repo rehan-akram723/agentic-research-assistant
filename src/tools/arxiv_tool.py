@@ -34,19 +34,6 @@ class ArxivTool:
         return self.search_arxiv(query, limit)
 
     def search_arxiv(self, query: str, limit: Optional[int] = None) -> List[Document]:
-        """
-        Executes a search against the arXiv API.
-
-        Args:
-            query (str): The search query string.
-            limit (int, optional): Max results to retrieve. Overrides self.max_results if provided.
-
-        Returns:
-            List[Document]: A list of mapped Document objects.
-
-        Raises:
-            RetrievalError: If the arXiv API is unreachable or fails after retries.
-        """
         if arxiv is None:
             logger.error("arxiv package is not installed.")
             raise RetrievalError("arxiv package is required but not installed.")
@@ -64,8 +51,9 @@ class ArxivTool:
             except Exception as e:
                 logger.warning(f"arXiv search attempt {attempt + 1} failed: {e}")
                 if attempt == max_retries - 1:
-                    logger.error(f"arXiv search completely failed for query: '{query}'")
-                    raise RetrievalError(f"arXiv search failed after {max_retries} attempts: {e}") from e
+                    # FIX: Do not raise an exception. Log and degrade gracefully.
+                    logger.error(f"arXiv search completely failed for query: '{query}'. Degrading to empty list.")
+                    return []
                 time.sleep(2 ** attempt)
         
         return []
