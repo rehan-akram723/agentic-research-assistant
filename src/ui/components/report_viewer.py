@@ -118,6 +118,14 @@ def render_report(response: dict[str, Any]) -> None:
                 f"<span style='color:#e5e5e5;'>api_failures</span>"
                 f"<span style='color:{api_fail_color};'>{api_fail}</span></div>"
             )
+            cache_hits = mx.get("cache_hits", 0)
+            cache_color = "#d4af37" if cache_hits else "#888"
+            rows.append(
+                f"<div style='display:flex; justify-content:space-between; "
+                f"font-family:monospace; font-size:0.78rem; color:#888888; padding:6px 0;'>"
+                f"<span style='color:#e5e5e5;'>cache_hits</span>"
+                f"<span style='color:{cache_color};'>{cache_hits}</span></div>"
+            )
             st.markdown("".join(rows), unsafe_allow_html=True)
 
     if report_md:

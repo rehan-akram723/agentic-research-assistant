@@ -6,10 +6,11 @@ then deduplicates by document ID and caps at max_results.
 The aggregator is a pure function — it has no state and creates no singletons.
 The retrieval_agent is the only consumer.
 """
-from __future__ import annotations
-
 import asyncio
+import threading
 from typing import Dict, List
+
+from cachetools import LRUCache
 
 from src.core.logger import get_logger
 from src.core.metrics import get_current_metrics
@@ -19,44 +20,67 @@ from src.tools.semantic_scholar_tool import search_semantic_scholar
 
 logger = get_logger(__name__)
 
+_cache = LRUCache(maxsize=256)
+_cache_lock = threading.Lock()
 
-def _safe_fetch(fn, query: str, limit: int) -> List[Document]:
-    """Call a synchronous search function and swallow exceptions, returning []."""
+def _safe_fetch(fn, query: str, limit: int) -> tuple[List[Document], bool]:
+    """Call a synchronous search function and swallow exceptions, returning (results, was_cache_hit)."""
+    cache_key = (fn.__name__, query, limit)
+    
+    with _cache_lock:
+        if cache_key in _cache:
+            return _cache[cache_key], True
+            
     try:
-        return list(fn(query, max_results=limit) or [])
+        results = list(fn(query, max_results=limit) or [])
     except Exception as exc:
         logger.warning("Fetch failed for query=%r: %s", query[:60], exc)
-        return []
+        return [], False
+
+    with _cache_lock:
+        _cache[cache_key] = results
+        
+    return results, False
 
 
-async def _gather_all(queries: List[str], per_source_limit: int) -> tuple[List[Document], int]:
-    """Fan out all (query, source) pairs concurrently.
+async def _sem_fetch(sem: asyncio.Semaphore, fn, query: str, limit: int) -> tuple[List[Document], bool]:
+    """Wraps the blocking _safe_fetch in a thread with semaphore control."""
+    async with sem:
+        return await asyncio.to_thread(_safe_fetch, fn, query, limit)
+
+
+async def _gather_all(queries: List[str], per_source_limit: int) -> tuple[List[Document], int, int]:
+    """Fan out all (query, source) pairs concurrently, bound by a semaphore.
 
     Returns:
-        (documents, raw_count) where documents is already deduplicated and
+        (documents, raw_count, cache_hits) where documents is already deduplicated and
         raw_count is the total number of results before deduplication.
     """
+    sem = asyncio.Semaphore(2)
     # Build one coroutine per (query, source) combination.
     tasks = []
     for query in queries:
         tasks.append(
-            asyncio.to_thread(_safe_fetch, search_arxiv, query, per_source_limit)
+            _sem_fetch(sem, search_arxiv, query, per_source_limit)
         )
         tasks.append(
-            asyncio.to_thread(_safe_fetch, search_semantic_scholar, query, per_source_limit)
+            _sem_fetch(sem, search_semantic_scholar, query, per_source_limit)
         )
 
     # All tasks run concurrently; blocking I/O inside each is off the event loop.
-    batches: List[List[Document]] = await asyncio.gather(*tasks)
+    batches = await asyncio.gather(*tasks)
 
     collected: Dict[str, Document] = {}
     raw_count = 0
-    for batch in batches:
+    cache_hits = 0
+    for batch, was_hit in batches:
+        if was_hit:
+            cache_hits += 1
         raw_count += len(batch)
         for doc in batch:
             collected.setdefault(doc.id, doc)
 
-    return list(collected.values()), raw_count
+    return list(collected.values()), raw_count, cache_hits
 
 
 class DocumentAggregator:
@@ -82,13 +106,13 @@ class DocumentAggregator:
         per_source_limit = max(1, self.max_results // 2)
 
         try:
-            docs, raw_count = asyncio.run(
+            docs, raw_count, cache_hits = asyncio.run(
                 _gather_all(queries, per_source_limit)
             )
         except RuntimeError:
             # asyncio.run() fails if a loop is already running (e.g. in tests
             # that use an explicit event loop). Fall back to a new thread.
-            docs, raw_count = asyncio.get_event_loop().run_until_complete(
+            docs, raw_count, cache_hits = asyncio.get_event_loop().run_until_complete(
                 _gather_all(queries, per_source_limit)
             )
 
@@ -99,6 +123,7 @@ class DocumentAggregator:
         if m:
             m.papers_retrieved = len(documents)
             m.duplicates_removed = max(0, raw_count - len(documents))
+            m.cache_hits += cache_hits
 
         logger.info(
             "DocumentAggregator: %d unique docs from %d raw results "

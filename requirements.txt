@@ -19,6 +19,7 @@ pydantic-settings>=2.0.0
 # Academic retrieval
 arxiv>=2.1.0
 requests>=2.31.0
+cachetools>=5.3.0
 
 # Vector memory — AVX2 build for Intel Core Ultra / Ryzen 5000+ CPUs
 # Use `faiss-cpu` instead if your CPU does not support AVX2
