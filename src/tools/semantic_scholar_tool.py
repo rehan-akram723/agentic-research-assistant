@@ -1,7 +1,16 @@
 """Semantic Scholar search wrapper returning Document-compatible schemas.
 
-Uses the public Semantic Scholar Graph API. Features retry mechanisms for rate limits
-and robust mapping to the core Document schema.
+Uses the public Semantic Scholar Graph API (no auth required for ≤100 RPM).
+
+Throttling strategy
+-------------------
+* **Proactive** — ``time.sleep(1.1)`` is called *before every HTTP attempt* to
+  ensure we never exceed 1 request per second, regardless of retry count.
+* **Reactive** — If a 429 is still received (e.g. in multi-threaded scenarios),
+  exponential back-off is applied (5 s × attempt) before the next retry.
+
+This dual-layer approach prevents 429 warnings in normal single-threaded use
+while still recovering gracefully if the limit is hit.
 """
 from __future__ import annotations
 
@@ -47,29 +56,62 @@ class SemanticScholarTool:
 
         max_retries = 3
         for attempt in range(max_retries):
+            # ----------------------------------------------------------------
+            # Proactive throttle — enforce ≤1 RPS *before* every HTTP request.
+            # At 1.1 s per call we stay well inside the 1 RPS free-tier limit
+            # without needing to track wall-clock state across calls.
+            # ----------------------------------------------------------------
+            logger.debug(
+                "Semantic Scholar: sleeping 1.1 s before attempt %d (query=%r)",
+                attempt + 1,
+                query[:60],
+            )
+            time.sleep(1.1)
+
             try:
-                resp = requests.get(self.BASE_URL, params=params, headers=headers, timeout=10)
-                
+                resp = requests.get(
+                    self.BASE_URL, params=params, headers=headers, timeout=15
+                )
+
                 if resp.status_code == 429:
-                    logger.warning("Semantic Scholar API rate limit exceeded. Retrying...")
-                    time.sleep(2 ** (attempt + 1))
+                    # Reactive back-off: 5 s, 10 s, 15 s for attempts 0, 1, 2.
+                    backoff = 5 * (attempt + 1)
+                    logger.warning(
+                        "Semantic Scholar API rate limit (429) on attempt %d — "
+                        "backing off %d s before retry.",
+                        attempt + 1,
+                        backoff,
+                    )
+                    time.sleep(backoff)
                     continue
-                    
+
                 resp.raise_for_status()
                 data = resp.json()
-                
+
                 hits = data.get("data", [])
-                results: List[Document] = []
-                for item in hits:
-                    results.append(self._map_to_document(item))
+                results: List[Document] = [self._map_to_document(item) for item in hits]
+                logger.debug(
+                    "Semantic Scholar: returned %d results for query %r (attempt %d).",
+                    len(results),
+                    query[:60],
+                    attempt + 1,
+                )
                 return results
-                
-            except requests.exceptions.RequestException as e:
-                logger.warning(f"Semantic Scholar search attempt {attempt + 1} failed: {e}")
+
+            except requests.exceptions.RequestException as exc:
+                logger.warning(
+                    "Semantic Scholar search attempt %d failed: %s", attempt + 1, exc
+                )
                 if attempt == max_retries - 1:
-                    # FIX: Do not raise an exception. Log and degrade gracefully.
-                    logger.error(f"Semantic Scholar search completely failed for query: '{query}'. Degrading to empty list.")
+                    logger.error(
+                        "Semantic Scholar search exhausted %d retries for query %r — "
+                        "degrading to empty list.",
+                        max_retries,
+                        query[:60],
+                    )
                     return []
+                # Short jittered sleep before the next attempt (separate from the
+                # proactive 1.1 s above, which will also fire at the top of the loop).
                 time.sleep(2 ** attempt)
 
         return []

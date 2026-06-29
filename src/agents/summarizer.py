@@ -1,8 +1,8 @@
 """Summarizer agent for Phase 3.
 
-The summarizer produces one structured summary per retrieved document. Gemini is
-used when available, while a deterministic fallback keeps the pipeline runnable
-without external model access.
+The summarizer produces one structured summary per retrieved document. An
+OpenAI-compatible chat model is used when available, while a deterministic
+fallback keeps the pipeline runnable without external model access.
 """
 from __future__ import annotations
 
@@ -12,19 +12,14 @@ from typing import List
 
 from pydantic import BaseModel, Field
 
-from src.core.config import settings
 from src.core.exceptions import AgentError
 from src.core.logger import get_logger
+from src.core.llm import call_openrouter_completion
+from src.core.metrics import track_latency
 from src.graph.state import ResearchState
 from src.schemas.document import Document
 
 logger = get_logger(__name__)
-
-try:  # pragma: no cover - import depends on environment
-    from langchain_google_genai import ChatGoogleGenerativeAI
-except ImportError:  # pragma: no cover
-    ChatGoogleGenerativeAI = None
-
 
 class SummaryPayload(BaseModel):
     summary: str = Field(default="")
@@ -42,16 +37,6 @@ def _coerce_document(item: object) -> Document:
         return Document(**item)
 
     raise AgentError("summarizer_agent received an invalid retrieved document.")
-
-
-def _build_llm() -> object | None:
-    if ChatGoogleGenerativeAI is None or not settings.gemini_api_key:
-        return None
-    return ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
-        google_api_key=settings.gemini_api_key,
-        temperature=0.2,
-    )
 
 
 def _split_sentences(text: str) -> List[str]:
@@ -77,17 +62,13 @@ def _parse_payload(payload: str) -> SummaryPayload:
     return SummaryPayload.model_validate(data)
 
 
-def _call_gemini(document: Document) -> SummaryPayload:
-    if ChatGoogleGenerativeAI is None:
-        raise AgentError("langchain-google-genai is not installed.")
-    if not settings.gemini_api_key:
-        raise AgentError("Gemini API key is not configured.")
-
+def _call_model(document: Document) -> SummaryPayload:
     prompt = (
         "You are summarizing a research paper for downstream citation verification. "
         "Return JSON only with keys summary, key_points, and claims. The summary should be 2 to 4 sentences. "
         "Key points should contain 2 to 4 concise bullets, and claims should contain 1 to 3 factual claims "
-        "drawn only from the supplied title, authors, abstract, and metadata.\n\n"
+        "drawn only from the supplied title, authors, abstract, and metadata. "
+        "Your entire response must be one valid JSON object and nothing else.\n\n"
         f"Document ID: {document.id}\n"
         f"Title: {document.title}\n"
         f"Authors: {', '.join(document.authors)}\n"
@@ -96,14 +77,8 @@ def _call_gemini(document: Document) -> SummaryPayload:
         f"Source: {document.source}\n"
     )
 
-    model = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
-        google_api_key=settings.gemini_api_key,
-        temperature=0.2,
-    )
-    response = model.invoke(prompt)
-    content = getattr(response, "content", response)
-    return _parse_payload(str(content))
+    content = call_openrouter_completion(prompt, temperature=0.2)
+    return _parse_payload(content)
 
 
 def _format_summary(document: Document, payload: SummaryPayload) -> str:
@@ -124,6 +99,7 @@ def _format_summary(document: Document, payload: SummaryPayload) -> str:
     return "\n".join(lines)
 
 
+@track_latency("summarizer")
 def summarizer_agent(state: ResearchState) -> dict:
     try:
         documents = [_coerce_document(item) for item in (state.get("retrieved_docs") or [])]
@@ -131,7 +107,7 @@ def summarizer_agent(state: ResearchState) -> dict:
 
         for document in documents:
             try:
-                payload = _call_gemini(document)
+                payload = _call_model(document)
             except Exception as exc:
                 logger.warning("summarizer_agent falling back to deterministic summary: %s", exc)
                 payload = _fallback_payload(document)

@@ -1,8 +1,9 @@
 """Planner agent for Phase 3.
 
 This agent turns the incoming research question into a small set of academic
-search queries. It uses Gemini when configured, and falls back to a local
-heuristic when the model is unavailable or the response cannot be parsed.
+search queries. It uses an OpenAI-compatible chat model when configured, and
+falls back to a local heuristic when the model is unavailable or the response
+cannot be parsed.
 """
 from __future__ import annotations
 
@@ -10,18 +11,13 @@ import json
 import re
 from typing import List
 
-from src.core.config import settings
 from src.core.exceptions import AgentError
 from src.core.logger import get_logger
+from src.core.llm import call_openrouter_completion
+from src.core.metrics import track_latency
 from src.graph.state import ResearchState
 
 logger = get_logger(__name__)
-
-try:  # pragma: no cover - import depends on environment
-    from langchain_google_genai import ChatGoogleGenerativeAI
-except ImportError:  # pragma: no cover
-    ChatGoogleGenerativeAI = None
-
 
 def _fallback_queries(question: str) -> List[str]:
     normalized = " ".join(question.strip().split())
@@ -66,33 +62,24 @@ def _parse_queries(payload: str) -> List[str]:
         return queries[:5]
 
 
-def _call_gemini(question: str) -> List[str]:
-    if ChatGoogleGenerativeAI is None:
-        raise AgentError("langchain-google-genai is not installed.")
-    if not settings.gemini_api_key:
-        raise AgentError("Gemini API key is not configured.")
-
+def _call_model(question: str) -> List[str]:
     prompt = (
         "You are an academic research planner. Generate 3 to 5 concise search queries "
         "for scholarly search engines. Return JSON only with a top-level key named "
         '"search_queries". Each query should be distinct, short, and directly tied to '
-        "the question. Avoid duplicates and avoid complete sentences.\n\n"
+        "the question. Avoid duplicates and avoid complete sentences. "
+        "Your entire response must be one valid JSON object and nothing else.\n\n"
         f"Research question: {question}"
     )
 
-    model = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
-        google_api_key=settings.gemini_api_key,
-        temperature=0.2,
-    )
-    response = model.invoke(prompt)
-    content = getattr(response, "content", response)
-    queries = _parse_queries(str(content))
+    content = call_openrouter_completion(prompt, temperature=0.2)
+    queries = _parse_queries(content)
     if not queries:
-        raise AgentError("Gemini returned no usable search queries.")
+        raise AgentError("OpenRouter returned no usable search queries.")
     return queries
 
 
+@track_latency("planner")
 def planner_agent(state: ResearchState) -> dict:
     try:
         question = str(state.get("question", "") or "").strip()
@@ -100,9 +87,9 @@ def planner_agent(state: ResearchState) -> dict:
             raise AgentError("planner_agent requires a non-empty research question.")
 
         try:
-            queries = _call_gemini(question)
+            queries = _call_model(question)
         except AgentError as exc:
-            logger.warning("planner_agent Gemini planning failed; using fallback queries: %s", exc)
+            logger.warning("planner_agent model planning failed; using fallback queries: %s", exc)
             queries = _fallback_queries(question)
 
         if not queries:

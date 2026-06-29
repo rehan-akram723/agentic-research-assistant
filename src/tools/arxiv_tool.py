@@ -5,6 +5,7 @@ Pydantic model mapping.
 """
 from __future__ import annotations
 
+from http import client
 import time
 from typing import List, Optional
 
@@ -34,25 +35,32 @@ class ArxivTool:
         return self.search_arxiv(query, limit)
 
     def search_arxiv(self, query: str, limit: Optional[int] = None) -> List[Document]:
+        """
+        Executes a search against the arXiv API using v2.1.0+ client syntax.
+        """
         if arxiv is None:
             logger.error("arxiv package is not installed.")
             raise RetrievalError("arxiv package is required but not installed.")
 
         search_limit = limit if limit is not None else self.max_results
         
+        # Initialize the client required for v2.1.0+
+        client = arxiv.Client()
+        search_query = arxiv.Search(query=query, max_results=search_limit)
+        
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                search = arxiv.Search(query=query, max_results=search_limit)
+                # Use the client to execute the search
+                results_generator = client.results(search_query)
                 results: List[Document] = []
-                for entry in search.results():
+                for entry in results_generator:
                     results.append(self._map_to_document(entry))
                 return results
             except Exception as e:
                 logger.warning(f"arXiv search attempt {attempt + 1} failed: {e}")
                 if attempt == max_retries - 1:
-                    # FIX: Do not raise an exception. Log and degrade gracefully.
-                    logger.error(f"arXiv search completely failed for query: '{query}'. Degrading to empty list.")
+                    logger.error(f"arXiv search failed for query: '{query}'. Degrading to empty list.")
                     return []
                 time.sleep(2 ** attempt)
         

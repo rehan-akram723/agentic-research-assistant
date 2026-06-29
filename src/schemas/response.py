@@ -1,6 +1,7 @@
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 from src.schemas.document import Citation
+
 
 class ResearchResponse(BaseModel):
     """Validated API response payload returning the completed research."""
@@ -12,6 +13,15 @@ class ResearchResponse(BaseModel):
     docs_retrieved: int = Field(description="Total number of unique documents successfully retrieved")
     processing_time_seconds: float = Field(description="Total execution time in seconds")
     error_message: Optional[str] = Field(default=None, description="Error details if status is not 'success'")
+    # Metrics snapshot — null when the pipeline errors before metrics are captured.
+    metrics: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Pipeline instrumentation: token usage, estimated cost, per-agent latencies, "
+            "embedding time, duplicate count, cache hits, and API failure count."
+        ),
+    )
+
 
 class HealthResponse(BaseModel):
     """API Health Check response payload."""

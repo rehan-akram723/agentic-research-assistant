@@ -2,16 +2,38 @@
 .env
 env/
 venv/
+.venv/
+
+# Python bytecode
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
 
 # Vector Databases
 faiss_index/
 
+# Build / dist
+dist/
+build/
+*.egg-info/
+
 # IDEs
 .vscode/
 .idea/
+*.swp
 
-# Python
-*.pyc
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
 
+# Evaluation output (raw data — keep the .md for display)
+docs/evaluation.csv
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project-internal files not for public consumption
 PROJECT_MANIFEST.md

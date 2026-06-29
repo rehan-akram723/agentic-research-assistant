@@ -1,7 +1,7 @@
 """Citation verifier agent for Phase 3.
 
 The verifier checks the generated claims against source documents using FAISS
-similarity and, when configured, Gemini-assisted judgment. It emits state-only
+similarity and, when configured, OpenAI-compatible judgment. It emits state-only
 patches containing `Citation` objects.
 """
 from __future__ import annotations
@@ -12,20 +12,15 @@ from typing import Dict, List
 
 from pydantic import BaseModel, Field
 
-from src.core.config import settings
 from src.core.exceptions import AgentError, CitationError
 from src.core.logger import get_logger
+from src.core.llm import call_openrouter_completion
+from src.core.metrics import track_latency
 from src.graph.state import ResearchState
 from src.schemas.document import Citation, Document
 from src.tools.faiss_memory_tool import faiss_memory
 
 logger = get_logger(__name__)
-
-try:  # pragma: no cover - import depends on environment
-    from langchain_google_genai import ChatGoogleGenerativeAI
-except ImportError:  # pragma: no cover
-    ChatGoogleGenerativeAI = None
-
 
 class VerificationPayload(BaseModel):
     is_verified: bool = Field(default=False)
@@ -42,16 +37,6 @@ def _coerce_document(item: object) -> Document:
         return Document(**item)
 
     raise CitationError("citation_verifier_agent received an invalid retrieved document.")
-
-
-def _build_llm() -> object | None:
-    if ChatGoogleGenerativeAI is None or not settings.gemini_api_key:
-        return None
-    return ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
-        google_api_key=settings.gemini_api_key,
-        temperature=0.2,
-    )
 
 
 def _document_lookup(documents: List[Document]) -> Dict[str, Document]:
@@ -112,32 +97,23 @@ def _parse_payload(payload: str) -> VerificationPayload:
     return VerificationPayload.model_validate(data)
 
 
-def _call_gemini(claim: str, document: Document) -> VerificationPayload:
-    if ChatGoogleGenerativeAI is None:
-        raise AgentError("langchain-google-genai is not installed.")
-    if not settings.gemini_api_key:
-        raise AgentError("Gemini API key is not configured.")
-
+def _call_model(claim: str, document: Document) -> VerificationPayload:
     prompt = (
         "You are verifying whether a claim is explicitly supported by a research paper. "
         "Return JSON only with keys is_verified and quote. The quote should be the shortest exact supporting "
-        "span available from the abstract or metadata, or null if the claim is not supported.\n\n"
+        "span available from the abstract or metadata, or null if the claim is not supported. "
+        "Your entire response must be one valid JSON object and nothing else.\n\n"
         f"Claim: {claim}\n"
         f"Document title: {document.title}\n"
         f"Document authors: {', '.join(document.authors)}\n"
         f"Document abstract: {document.abstract}\n"
     )
 
-    model = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
-        google_api_key=settings.gemini_api_key,
-        temperature=0.2,
-    )
-    response = model.invoke(prompt)
-    content = getattr(response, "content", response)
-    return _parse_payload(str(content))
+    content = call_openrouter_completion(prompt, temperature=0.2)
+    return _parse_payload(content)
 
 
+@track_latency("citation_verifier")
 def citation_verifier_agent(state: ResearchState) -> dict:
     try:
         summaries = [str(summary).strip() for summary in (state.get("summaries") or []) if str(summary).strip()]
@@ -148,7 +124,6 @@ def citation_verifier_agent(state: ResearchState) -> dict:
             raise CitationError("No retrieved documents available for citation verification.")
 
         lookup = _document_lookup(documents)
-        llm = _build_llm()
         verified: List[Citation] = []
 
         for summary in summaries:
@@ -177,10 +152,7 @@ def citation_verifier_agent(state: ResearchState) -> dict:
 
             for claim in claims or [summary[:240]]:
                 try:
-                    if llm is not None:
-                        payload = _call_gemini(claim, document)
-                    else:
-                        payload = _fallback_verification(claim, document)
+                    payload = _call_model(claim, document)
                 except Exception as exc:
                     logger.warning("citation_verifier_agent falling back to deterministic verification: %s", exc)
                     payload = _fallback_verification(claim, document)
