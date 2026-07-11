@@ -78,19 +78,26 @@ class ReportPayload(BaseModel):
         ),
     )
 
+    executive_summary: str = Field(
+        default="",
+        description="A deeply synthesized, specific executive summary of the findings. Must not be generic.",
+    )
+    key_findings: List[str] = Field(
+        default_factory=list,
+        description="List of synthesized, highly specific insights derived across the papers.",
+    )
+
     # ------------------------------------------------------------------ #
     # Agent-populated display fields (not expected from the LLM)          #
     # ------------------------------------------------------------------ #
 
     title: str = Field(default="Research Synthesis")
-    executive_summary: str = Field(default="")
-    key_findings: List[str] = Field(default_factory=list)
 
     # ------------------------------------------------------------------ #
     # Validators                                                           #
     # ------------------------------------------------------------------ #
 
-    @field_validator("methods_and_scope", "limitations_and_gaps", "next_steps", mode="before")
+    @field_validator("methods_and_scope", "limitations_and_gaps", "next_steps", "key_findings", mode="before")
     @classmethod
     def coerce_to_list_of_strings(cls, value: object) -> List[str]:
         """Accept a list, a bare string, or None — always produce List[str].

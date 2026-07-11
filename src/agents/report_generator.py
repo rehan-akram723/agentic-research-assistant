@@ -53,16 +53,19 @@ logger = get_logger(__name__)
 # limitations_and_gaps, next_steps — all must be lists of strings.
 _REPORT_SCHEMA_BLOCK = """\
 Return ONLY valid JSON. Do NOT include markdown fences, prose, or extra keys.
-The JSON object must have exactly these three keys:
+The JSON object must have exactly these keys:
 
 {
+  "executive_summary":    <string — a deeply synthesized, specific executive summary of the findings. Must not be generic.>,
+  "key_findings":         <list of strings — synthesized, highly specific insights derived across the papers.>,
   "methods_and_scope":    <list of strings — research methods and scope found in the literature. If no data, return []>,
-  "limitations_and_gaps": <list of strings — limitations and knowledge gaps identified. If no data, return []>,
+  "limitations_and_gaps": <list of strings — limitations and knowledge gaps identified. Must explicitly name specific papers, models, or metrics when stating gaps. DO NOT be generic. If no data, return []>,
   "next_steps":           <list of strings — recommended follow-on actions. If no data, return []>
 }
 
 Rules:
-- Every value MUST be a JSON array of strings (e.g. ["...", "..."]).
+- The values for key_findings, methods_and_scope, limitations_and_gaps, and next_steps MUST be a JSON array of strings (e.g. ["...", "..."]).
+- MUST include in-line citations like [1], [2] at the end of relevant sentences to ground your claims, using the indices from the Verified citations list.
 - An empty array [] is a valid value — never use null or omit the key.
 - Do not add any key not listed above.
 - Do not wrap the JSON in ```json or any markdown.
@@ -138,7 +141,7 @@ def _build_prompt(question: str, summaries: List[str], citations: List[Citation]
         else "[]"
     )
     citation_lines = [
-        f"- claim: {c.claim}\n  source: {c.source_title}\n  verified: {c.is_verified}\n  quote: {c.quote or ''}"
+        f"[{c.id}] claim: {c.claim}\n  source: {c.source_title}\n  verified: {c.is_verified}\n  quote: {c.quote or ''}"
         for c in citations
     ]
     citations_block = "\n".join(citation_lines) if citation_lines else "[]"
@@ -174,7 +177,7 @@ def _build_repair_prompt(
         else "[]"
     )
     citation_lines = [
-        f"- claim: {c.claim}\n  source: {c.source_title}\n  verified: {c.is_verified}\n  quote: {c.quote or ''}"
+        f"[{c.id}] claim: {c.claim}\n  source: {c.source_title}\n  verified: {c.is_verified}\n  quote: {c.quote or ''}"
         for c in citations
     ]
     citations_block = "\n".join(citation_lines) if citation_lines else "[]"
@@ -388,7 +391,7 @@ def _format_report(
     if citations:
         for c in citations:
             status = "verified" if c.is_verified else "unverified"
-            ref = f"- {c.source_title or 'Unknown source'} ({c.source_doc_id or 'n/a'}) [{status}]"
+            ref = f"- [{c.id}] {c.source_title or 'Unknown source'} ({c.source_doc_id or 'n/a'}) [{status}]"
             if c.quote:
                 ref += f": {c.quote[:160]}"
             lines.append(ref)
@@ -401,9 +404,13 @@ def _format_report(
     if summaries:
         lines.extend(["", "## Source Summaries"])
         for summary in summaries:
-            first = summary.splitlines()[0].strip() if summary.splitlines() else summary.strip()
-            if first:
-                lines.append(f"- {first}")
+            lines_s = summary.splitlines()
+            summary_line = next(
+                (line.split(":", 1)[1].strip() for line in lines_s if line.lower().startswith("summary:") and ":" in line),
+                lines_s[0].strip() if lines_s else summary.strip()
+            )
+            if summary_line and not summary_line.lower().startswith("document id:"):
+                lines.append(f"- {summary_line}")
 
     return "\n".join(lines).strip()
 
@@ -443,12 +450,23 @@ def report_generator_agent(state: ResearchState) -> dict:
             for s in (state.get("summaries") or [])
             if str(s).strip()
         ]
-        citations: List[Citation] = []
+        raw_citations = []
         for item in state.get("verified_citations") or []:
             if isinstance(item, Citation):
-                citations.append(item)
+                raw_citations.append(item)
             elif isinstance(item, dict):
-                citations.append(Citation.model_validate(item))
+                raw_citations.append(Citation.model_validate(item))
+
+        citations: List[Citation] = []
+        seen_titles = set()
+        for c in raw_citations:
+            title_lower = (c.source_title or "").lower().strip()
+            if title_lower and title_lower not in seen_titles:
+                seen_titles.add(title_lower)
+                citations.append(c)
+        
+        for i, c in enumerate(citations):
+            c.id = i + 1
 
         # --- LLM call with self-healing repair loop ---
         try:
@@ -461,11 +479,16 @@ def report_generator_agent(state: ResearchState) -> dict:
                     else "This report summarises the evidence gathered during the research run."
                 )
             if not payload.key_findings:
-                payload.key_findings = [
-                    s.splitlines()[0].strip()[:280]
-                    for s in summaries
-                    if s.splitlines()
-                ][:5]
+                payload.key_findings = []
+                for s in summaries:
+                    s_lines = s.splitlines()
+                    summary_line = next(
+                        (line.split(":", 1)[1].strip() for line in s_lines if line.lower().startswith("summary:") and ":" in line),
+                        s_lines[0].strip() if s_lines else s.strip()
+                    )
+                    if summary_line and not summary_line.lower().startswith("document id:"):
+                        payload.key_findings.append(summary_line[:280])
+                payload.key_findings = payload.key_findings[:5]
             if not payload.title or payload.title == "Research Synthesis":
                 payload.title = "Research Synthesis"
 
@@ -486,7 +509,7 @@ def report_generator_agent(state: ResearchState) -> dict:
             f"({len(summaries)} summaries, {len(citations)} citations)"
         ]
         logger.info("report_generator_agent assembled report successfully.")
-        return {"final_report": final_report, "step_log": step_log}
+        return {"final_report": final_report, "step_log": step_log, "verified_citations": citations}
 
     except AgentError:
         raise
