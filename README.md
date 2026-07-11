@@ -5,7 +5,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688.svg)](https://fastapi.tiangolo.com/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.2%2B-blueviolet.svg)](https://langchain-ai.github.io/langgraph/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.35%2B-FF4B4B.svg)](https://streamlit.io/)
+[![React](https://img.shields.io/badge/React-18%2B-61DAFB.svg)](https://react.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -27,7 +27,7 @@ The system follows **Clean Architecture** with four concentric layers. Each laye
 ```
 ┌──────────────────────────────────────┐
 │  Interface Layer                     │
-│  Streamlit UI  ·  FastAPI REST API   │
+│  React UI  ·  FastAPI REST API       │
 └──────────────┬───────────────────────┘
                │
 ┌──────────────▼───────────────────────┐
@@ -58,8 +58,8 @@ See [`docs/architecture.md`](docs/architecture.md) for a full layer-by-layer bre
 | Orchestration | LangGraph 0.2+ |
 | LLM | OpenRouter (OpenAI-compatible API) |
 | Backend | FastAPI + Uvicorn |
-| Frontend | Streamlit |
-| Academic Retrieval | arXiv API + Semantic Scholar API |
+| Frontend | React + Vite + Framer Motion |
+| Academic Retrieval | arXiv API + Semantic Scholar API (Concurrent) |
 | Vector Memory | FAISS + sentence-transformers |
 | Config & Validation | Pydantic V2 + pydantic-settings |
 
@@ -110,13 +110,15 @@ uvicorn src.api.main:app --reload
 
 The Swagger UI is available at **http://localhost:8000/docs**.
 
-### 4. Start the Streamlit UI (separate terminal)
+### 4. Start the React UI (separate terminal)
 
 ```bash
-streamlit run src/ui/app.py
+cd frontend
+npm install
+npm run dev
 ```
 
-Open **http://localhost:8501** in your browser.
+Open **http://localhost:5173** in your browser.
 
 ---
 
@@ -211,6 +213,7 @@ Results are saved to:
 
 ```
 agentic-research-assistant/
+├── frontend/            # React + Vite application
 ├── src/
 │   ├── agents/          # Planner, Retrieval, Summarizer, CitationVerifier, ReportGenerator
 │   ├── api/             # FastAPI routes, middleware, main app factory
@@ -219,7 +222,7 @@ agentic-research-assistant/
 │   ├── schemas/         # Pydantic V2 data contracts
 │   ├── services/        # ResearchService, EmbeddingService
 │   ├── tools/           # arXiv, Semantic Scholar, FAISS tools
-│   └── ui/              # Streamlit app and components
+│   └── ui/              # Legacy Streamlit app and components
 ├── tests/
 │   ├── integration/     # FastAPI TestClient tests
 │   └── unit/            # Agent and tool unit tests
@@ -279,4 +282,4 @@ Summarize research on protein structure prediction with machine learning.
 
 ---
 
-*Built with LangGraph · FastAPI · Streamlit · FAISS · OpenRouter*
+*Built with LangGraph · FastAPI · React · FAISS · OpenRouter*
