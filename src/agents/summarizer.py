@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 from typing import List
+from concurrent.futures import ThreadPoolExecutor
 
 from pydantic import BaseModel, Field
 
@@ -105,13 +106,19 @@ def summarizer_agent(state: ResearchState) -> dict:
         documents = [_coerce_document(item) for item in (state.get("retrieved_docs") or [])]
         summaries: List[str] = []
 
-        for document in documents:
+        def _summarize(document: Document) -> str:
             try:
                 payload = _call_model(document)
             except Exception as exc:
                 logger.warning("summarizer_agent falling back to deterministic summary: %s", exc)
                 payload = _fallback_payload(document)
-            summaries.append(_format_summary(document, payload))
+            return _format_summary(document, payload)
+
+        if documents:
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                summaries = list(executor.map(_summarize, documents))
+        else:
+            summaries = []
 
         step_log = [f"summarizer: produced {len(summaries)} summaries"]
         logger.info("summarizer_agent produced %s summaries", len(summaries))

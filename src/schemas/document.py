@@ -14,6 +14,7 @@ class Document(BaseModel):
 
 class Citation(BaseModel):
     """Internal representation of a verified factual claim linked to a source."""
+    id: Optional[int] = Field(default=None, description="Unique numerical ID assigned during report generation")
     claim: str = Field(description="The specific factual claim extracted from a summary")
     source_doc_id: str = Field(description="ID of the Document supporting the claim")
     source_title: str = Field(description="Title of the supporting Document")

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Dict, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pydantic import BaseModel, Field
 
@@ -126,6 +127,7 @@ def citation_verifier_agent(state: ResearchState) -> dict:
         lookup = _document_lookup(documents)
         verified: List[Citation] = []
 
+        tasks = []
         for summary in summaries:
             document_id, claims = _parse_summary(summary)
             document = lookup.get(document_id.lower()) if document_id else None
@@ -151,21 +153,35 @@ def citation_verifier_agent(state: ResearchState) -> dict:
                 continue
 
             for claim in claims or [summary[:240]]:
+                tasks.append((claim, document))
+
+        if tasks:
+            def _verify(claim: str, document: Document) -> Citation:
                 try:
                     payload = _call_model(claim, document)
                 except Exception as exc:
                     logger.warning("citation_verifier_agent falling back to deterministic verification: %s", exc)
                     payload = _fallback_verification(claim, document)
+                
+                def _smart_truncate(text: str, limit: int = 300) -> str:
+                    if len(text) <= limit:
+                        return text
+                    truncated = text[:limit]
+                    last_period = truncated.rfind('.')
+                    return truncated[:last_period + 1] if last_period > limit - 100 else truncated
 
-                verified.append(
-                    Citation(
-                        claim=claim[:300],
-                        source_doc_id=document.id,
-                        source_title=document.title,
-                        is_verified=bool(payload.is_verified),
-                        quote=(payload.quote[:300] if payload.quote else None),
-                    )
+                return Citation(
+                    claim=_smart_truncate(claim, 600),
+                    source_doc_id=document.id,
+                    source_title=document.title,
+                    is_verified=bool(payload.is_verified),
+                    quote=(_smart_truncate(payload.quote, 300) if payload.quote else None),
                 )
+
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [executor.submit(_verify, claim, document) for claim, document in tasks]
+                for future in as_completed(futures):
+                    verified.append(future.result())
 
         step_log = [f"citation_verifier: produced {len(verified)} citations"]
         logger.info("citation_verifier_agent produced %s citations", len(verified))
