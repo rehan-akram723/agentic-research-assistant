@@ -32,6 +32,9 @@ def retrieval_agent(state: ResearchState) -> dict:
         faiss_memory.reset()
         if documents:
             faiss_memory.add_documents(documents)
+            question = str(state.get("question", "")).strip()
+            if question:
+                documents = faiss_memory.similarity_search(question, k=max_results)
 
         if not documents:
             logger.warning("Retrieval returned zero documents across all sources and queries.")

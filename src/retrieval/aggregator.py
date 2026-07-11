@@ -11,6 +11,7 @@ import threading
 from typing import Dict, List
 
 from cachetools import LRUCache
+from aiolimiter import AsyncLimiter
 
 from src.core.logger import get_logger
 from src.core.metrics import get_current_metrics
@@ -43,10 +44,22 @@ def _safe_fetch(fn, query: str, limit: int) -> tuple[List[Document], bool]:
     return results, False
 
 
-async def _sem_fetch(sem: asyncio.Semaphore, fn, query: str, limit: int) -> tuple[List[Document], bool]:
+async def _sem_fetch(sem: asyncio.Semaphore, ss_limiter: AsyncLimiter, fn, query: str, limit: int) -> tuple[List[Document], bool]:
     """Wraps the blocking _safe_fetch in a thread with semaphore control."""
+    if fn.__name__ == "search_semantic_scholar":
+        async with ss_limiter:
+            pass # Consume rate limit token without blocking concurrent execution
+            
     async with sem:
-        return await asyncio.to_thread(_safe_fetch, fn, query, limit)
+        coro = asyncio.to_thread(_safe_fetch, fn, query, limit)
+        if fn.__name__ == "search_semantic_scholar":
+            try:
+                return await asyncio.wait_for(coro, timeout=3.0)
+            except asyncio.TimeoutError:
+                logger.warning("Semantic Scholar fetch timed out after 3.0s — degrading gracefully.")
+                return [], False
+        else:
+            return await coro
 
 
 async def _gather_all(queries: List[str], per_source_limit: int) -> tuple[List[Document], int, int]:
@@ -57,14 +70,30 @@ async def _gather_all(queries: List[str], per_source_limit: int) -> tuple[List[D
         raw_count is the total number of results before deduplication.
     """
     sem = asyncio.Semaphore(2)
+    
+    # Create the limiter inside the active event loop to prevent RuntimeError across threads
+    ss_limiter = AsyncLimiter(1, 1)
+    
     # Build one coroutine per (query, source) combination.
     tasks = []
+    
+    # 1. Dispatch ArXiv queries independently (no strict rate limits)
     for query in queries:
         tasks.append(
-            _sem_fetch(sem, search_arxiv, query, per_source_limit)
+            _sem_fetch(sem, ss_limiter, search_arxiv, query, per_source_limit)
         )
+        
+    # 2. Batch API Restructure for Semantic Scholar:
+    # Consolidate all queries into a single HTTP request to avoid aggressive 429 blocks
+    # Semantic Scholar uses a soft-match search, so joining queries works effectively.
+    if queries:
+        combined_query = " ".join(queries)
+        batch_limit = per_source_limit * len(queries)
+        # Cap the batch limit to avoid excessive payload parsing
+        batch_limit = min(batch_limit, 20)
+        
         tasks.append(
-            _sem_fetch(sem, search_semantic_scholar, query, per_source_limit)
+            _sem_fetch(sem, ss_limiter, search_semantic_scholar, combined_query, batch_limit)
         )
 
     # All tasks run concurrently; blocking I/O inside each is off the event loop.

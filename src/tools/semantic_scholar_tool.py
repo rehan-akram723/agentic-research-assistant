@@ -54,19 +54,11 @@ class SemanticScholarTool:
         if self.api_key:
             headers["x-api-key"] = self.api_key
 
-        max_retries = 3
+        max_retries = 1
         for attempt in range(max_retries):
             # ----------------------------------------------------------------
-            # Proactive throttle — enforce ≤1 RPS *before* every HTTP request.
-            # At 1.1 s per call we stay well inside the 1 RPS free-tier limit
-            # without needing to track wall-clock state across calls.
+            # Proactive throttle is now handled by aiolimiter in DocumentAggregator.
             # ----------------------------------------------------------------
-            logger.debug(
-                "Semantic Scholar: sleeping 1.1 s before attempt %d (query=%r)",
-                attempt + 1,
-                query[:60],
-            )
-            time.sleep(1.1)
 
             try:
                 resp = requests.get(
@@ -74,11 +66,10 @@ class SemanticScholarTool:
                 )
 
                 if resp.status_code == 429:
-                    # Reactive back-off: 5 s, 10 s, 15 s for attempts 0, 1, 2.
-                    backoff = 5 * (attempt + 1)
+                    backoff = 0.5
                     logger.warning(
                         "Semantic Scholar API rate limit (429) on attempt %d — "
-                        "backing off %d s before retry.",
+                        "backing off %.1f s before retry.",
                         attempt + 1,
                         backoff,
                     )
