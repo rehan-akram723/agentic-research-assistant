@@ -22,6 +22,8 @@ import argparse
 import csv
 import json
 import sys
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
 import time
 from datetime import datetime, timezone
 from pathlib import Path
