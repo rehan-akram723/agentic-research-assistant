@@ -1,0 +1,50 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --color-glass: rgba(255, 255, 255, 0.03);
+  --color-glass-hover: rgba(255, 255, 255, 0.08);
+  --color-glass-border: rgba(255, 255, 255, 0.08);
+  --color-neon-purple: #b026ff;
+  --color-neon-gold: #ffb800;
+  
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-display: 'Outfit', system-ui, sans-serif;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  
+  body {
+    @apply bg-slate-950 text-slate-300 antialiased selection:bg-neon-purple selection:text-white min-h-screen;
+    background-image: 
+      radial-gradient(circle at 15% 50%, rgba(176, 38, 255, 0.05), transparent 35%),
+      radial-gradient(circle at 85% 20%, rgba(255, 184, 0, 0.05), transparent 35%);
+    background-attachment: fixed;
+  }
+  
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-display text-slate-100 tracking-tight;
+  }
+}
+
+@layer utilities {
+  .glass-panel {
+    @apply bg-glass backdrop-blur-xl border border-glass-border shadow-2xl;
+  }
+  
+  .glass-input {
+    @apply bg-black/40 backdrop-blur-md border border-white/10 focus:border-neon-purple focus:ring-1 focus:ring-neon-purple/50 outline-none transition-all duration-300 text-slate-100 placeholder-slate-500;
+  }
+  
+  .text-glow-purple {
+    text-shadow: 0 0 30px rgba(176, 38, 255, 0.6);
+  }
+  
+  .btn-primary {
+    @apply relative overflow-hidden bg-gradient-to-r from-neon-purple to-indigo-600 text-white font-medium transition-all duration-300 hover:shadow-[0_0_20px_rgba(176,38,255,0.4)] hover:scale-[1.02] active:scale-[0.98];
+  }
+}

@@ -34,6 +34,8 @@ _ALLOWED_ORIGINS: list[str] = [
     "http://127.0.0.1:8501",       # Alternative localhost notation
     "http://localhost:3000",       # Common React / other frontend dev port
     "http://127.0.0.1:3000",
+    "http://localhost:5173",       # Vite dev server
+    "http://127.0.0.1:5173",
 ]
 
 _ALLOWED_METHODS: list[str] = [
